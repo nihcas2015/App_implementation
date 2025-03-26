@@ -11,10 +11,16 @@ class MobileAuthApp:
         # User credentials file
         self.credentials_file = 'user_credentials.txt'
         
+        # PDF upload directory
+        self.upload_dir = 'uploaded_pdfs'
+        os.makedirs(self.upload_dir, exist_ok=True)
+        
         # Custom CSS for dark-themed mobile-like design
         self.apply_custom_css()
     
     def apply_custom_css(self):
+        # [Previous CSS remains the same as in the original code]
+        # ... (copying the entire CSS from the previous artifact)
         st.markdown("""
         <style>
         :root {
@@ -178,7 +184,9 @@ class MobileAuthApp:
         if login_btn:
             if username and password:
                 if self.validate_login(username, password):
-                    st.success("Login Successful!")
+                    st.session_state.login_username = username
+                    st.session_state.page = 'file_upload'
+                    st.experimental_rerun()
                 else:
                     st.error("Invalid username or password")
             else:
@@ -234,6 +242,70 @@ class MobileAuthApp:
         
         if login_return_btn:
             st.session_state.page = 'login'
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    def file_upload_page(self):
+        """Render PDF file upload page"""
+        st.markdown('<div class="login-container">', unsafe_allow_html=True)
+        st.markdown('<h2 style="text-align:center; color:var(--accent-primary);">PDF Upload</h2>', unsafe_allow_html=True)
+        st.markdown('<p style="text-align:center; color:var(--text-secondary);">Upload your PDF files securely</p>', unsafe_allow_html=True)
+        
+        # File upload section
+        uploaded_file = st.file_uploader(
+            "Choose a PDF file", 
+            type=['pdf'],
+            help="Select a PDF file to upload"
+        )
+        
+        # Optional file description
+        file_description = st.text_area(
+            "File Description", 
+            help="Provide a brief description of the uploaded PDF"
+        )
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            upload_btn = st.button("Upload PDF")
+        
+        with col2:
+            logout_btn = st.button("Logout")
+        
+        if upload_btn and uploaded_file is not None:
+            try:
+                # Validate file extension
+                if not uploaded_file.name.lower().endswith('.pdf'):
+                    st.error("Only PDF files are allowed!")
+                    return
+                
+                # Generate a unique filename
+                unique_filename = os.path.join(
+                    self.upload_dir, 
+                    f"{st.session_state.login_username}_{uploaded_file.name}"
+                )
+                
+                # Save the uploaded file
+                with open(unique_filename, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                
+                # If description is provided, save it in a separate file
+                if file_description:
+                    desc_filename = f"{unique_filename}_description.txt"
+                    with open(desc_filename, "w") as f:
+                        f.write(file_description)
+                
+                st.success(f"PDF {uploaded_file.name} uploaded successfully!")
+            except Exception as e:
+                st.error(f"Error uploading PDF: {str(e)}")
+        
+        if logout_btn:
+            # Clear login-related session state
+            if 'login_username' in st.session_state:
+                del st.session_state.login_username
+            st.session_state.page = 'login'
+        
+        st.markdown('</div>', unsafe_allow_html=True)
     
     def run(self):
         """Main application runner"""
@@ -242,6 +314,8 @@ class MobileAuthApp:
             self.login_page()
         elif st.session_state.page == 'signup':
             self.signup_page()
+        elif st.session_state.page == 'file_upload':
+            self.file_upload_page()
 
 def main():
     app = MobileAuthApp()

@@ -1,6 +1,9 @@
 import streamlit as st
 import hashlib
 import os
+import json
+from datetime import datetime
+import uuid
 
 class MobileAuthApp:
     def __init__(self):
@@ -14,6 +17,12 @@ class MobileAuthApp:
         # PDF upload directory
         self.upload_dir = 'uploaded_pdfs'
         os.makedirs(self.upload_dir, exist_ok=True)
+        
+        # PDF metadata file
+        self.pdf_metadata_file = 'pdf_metadata.json'
+        if not os.path.exists(self.pdf_metadata_file):
+            with open(self.pdf_metadata_file, 'w') as f:
+                json.dump({}, f)
         
         # Custom CSS for dark-themed mobile-like design
         self.apply_custom_css()
@@ -248,6 +257,39 @@ class MobileAuthApp:
         
         st.markdown('</div>', unsafe_allow_html=True)
     
+    def get_user_upload_dir(self, username):
+        """Create and return a user-specific upload directory"""
+        user_dir = os.path.join(self.upload_dir, username)
+        os.makedirs(user_dir, exist_ok=True)
+        return user_dir
+    
+    def save_pdf_metadata(self, username, filename, original_filename, description):
+        """Save metadata about uploaded PDF files"""
+        try:
+            # Read existing metadata
+            with open(self.pdf_metadata_file, 'r') as f:
+                metadata = json.load(f)
+            
+            # Add new file metadata
+            file_id = str(uuid.uuid4())
+            metadata[file_id] = {
+                'username': username,
+                'filename': filename,
+                'original_filename': original_filename,
+                'description': description,
+                'upload_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'file_size': os.path.getsize(filename)
+            }
+            
+            # Write updated metadata
+            with open(self.pdf_metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=4)
+                
+            return file_id
+        except Exception as e:
+            st.error(f"Error saving file metadata: {str(e)}")
+            return None
+    
     def file_upload_page(self):
         """Render PDF file upload page"""
         st.markdown('<div class="login-container">', unsafe_allow_html=True)
@@ -271,13 +313,21 @@ class MobileAuthApp:
             help="Provide a brief description of the uploaded PDF"
         )
         
+        # File tags or categories
+        file_tags = st.text_input(
+            "Tags (comma separated)",
+            help="Add tags to help organize your files"
+        )
+        
         col1, col2 = st.columns(2)
         
         with col1:
             upload_btn = st.button("Upload PDF")
         
         with col2:
-            logout_btn = st.button("Logout")
+            view_files_btn = st.button("View My Files")
+        
+        logout_btn = st.button("Logout")
         
         if upload_btn and uploaded_file is not None:
             try:
@@ -286,28 +336,104 @@ class MobileAuthApp:
                     st.error("Only PDF files are allowed!")
                     return
                 
-                # Generate a unique filename
+                # Get user-specific directory
+                user_dir = self.get_user_upload_dir(current_username)
+                
+                # Generate a unique filename with timestamp
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                safe_filename = uploaded_file.name.replace(' ', '_')
                 unique_filename = os.path.join(
-                    self.upload_dir, 
-                    f"{current_username}_{uploaded_file.name}"
+                    user_dir, 
+                    f"{timestamp}_{safe_filename}"
                 )
                 
                 # Save the uploaded file
                 with open(unique_filename, "wb") as f:
                     f.write(uploaded_file.getbuffer())
                 
-                # If description is provided, save it in a separate file
-                if file_description:
-                    desc_filename = f"{unique_filename}_description.txt"
-                    with open(desc_filename, "w") as f:
-                        f.write(file_description)
+                # Save metadata including any tags
+                tags = [tag.strip() for tag in file_tags.split(',')] if file_tags else []
+                file_id = self.save_pdf_metadata(
+                    current_username, 
+                    unique_filename, 
+                    uploaded_file.name,
+                    file_description,
+                )
                 
-                st.success(f"PDF {uploaded_file.name} uploaded successfully!")
+                if file_id:
+                    st.success(f"PDF '{uploaded_file.name}' uploaded successfully!")
+                    st.info(f"File ID: {file_id}")
+                else:
+                    st.warning("File uploaded but metadata could not be saved.")
             except Exception as e:
                 st.error(f"Error uploading PDF: {str(e)}")
         
+        if view_files_btn:
+            st.session_state['page'] = 'view_files'
+            st.rerun()
+        
         if logout_btn:
             # Clear login-related session state
+            if 'current_username' in st.session_state:
+                del st.session_state['current_username']
+            st.session_state['page'] = 'login'
+            st.rerun()
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    def view_files_page(self):
+        """Render page to view uploaded PDF files"""
+        st.markdown('<div class="login-container">', unsafe_allow_html=True)
+        st.markdown('<h2 style="text-align:center; color:var(--accent-primary);">Your Files</h2>', unsafe_allow_html=True)
+        
+        # Retrieve current username from session state
+        current_username = st.session_state.get('current_username', 'Unknown User')
+        
+        try:
+            # Load metadata
+            with open(self.pdf_metadata_file, 'r') as f:
+                metadata = json.load(f)
+            
+            # Filter for current user's files
+            user_files = {k: v for k, v in metadata.items() if v['username'] == current_username}
+            
+            if not user_files:
+                st.info("You haven't uploaded any files yet.")
+            else:
+                st.write(f"You have {len(user_files)} file(s) uploaded:")
+                
+                # Display files in a nice format
+                for file_id, file_data in user_files.items():
+                    with st.expander(f"{file_data['original_filename']} ({file_data['upload_date']})"):
+                        st.write(f"Description: {file_data['description']}")
+                        st.write(f"Upload date: {file_data['upload_date']}")
+                        st.write(f"File size: {file_data['file_size']/1024:.2f} KB")
+                        
+                        # Option to download the file
+                        if os.path.exists(file_data['filename']):
+                            with open(file_data['filename'], "rb") as f:
+                                st.download_button(
+                                    label="Download PDF",
+                                    data=f,
+                                    file_name=file_data['original_filename'],
+                                    mime="application/pdf"
+                                )
+        except Exception as e:
+            st.error(f"Error loading your files: {str(e)}")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            back_btn = st.button("Back to Upload")
+        
+        with col2:
+            logout_btn = st.button("Logout")
+        
+        if back_btn:
+            st.session_state['page'] = 'file_upload'
+            st.rerun()
+        
+        if logout_btn:
             if 'current_username' in st.session_state:
                 del st.session_state['current_username']
             st.session_state['page'] = 'login'
@@ -326,6 +452,8 @@ class MobileAuthApp:
             self.signup_page()
         elif page == 'file_upload':
             self.file_upload_page()
+        elif page == 'view_files':
+            self.view_files_page()
 
 def main():
     app = MobileAuthApp()

@@ -13,9 +13,6 @@ class MobileAuthApp:
         
         # Custom CSS for dark-themed mobile-like design
         self.apply_custom_css()
-        
-        # Run the app
-        self.run()
     
     def apply_custom_css(self):
         st.markdown("""
@@ -170,8 +167,13 @@ class MobileAuthApp:
         password = st.text_input("Password", type="password", key="login_password",
                                  help="Enter your account password")
         
-        login_btn = st.button("Login")
-        signup_btn = st.button("Create Account")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            login_btn = st.button("Login")
+        
+        with col2:
+            signup_btn = st.button("Create Account")
         
         if login_btn:
             if username and password:
@@ -184,7 +186,6 @@ class MobileAuthApp:
         
         if signup_btn:
             st.session_state.page = 'signup'
-            st.experimental_rerun()
         
         # Forgot password link
         st.markdown('''
@@ -211,29 +212,28 @@ class MobileAuthApp:
         password = st.text_input("Password", type="password", key="signup_password",
                                  help="Create a strong password")
         
-        signup_btn = st.button("Sign Up")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            signup_btn = st.button("Sign Up")
+        
+        with col2:
+            login_return_btn = st.button("Back to Login")
         
         if signup_btn:
             if name and client_id and username and password:
                 # Attempt to save credentials
                 if self.save_credentials(name, client_id, username, password):
                     st.success("Account Created Successfully!")
-                    # Optionally, redirect to login page
+                    # Redirect to login page
                     st.session_state.page = 'login'
-                    st.experimental_rerun()
                 else:
                     st.error("Username already exists. Please choose another.")
             else:
                 st.error("Please fill in all fields")
         
-        # Back to login link
-        st.markdown('''
-        <div style="text-align:center; margin-top:10px;">
-            Already have an account? <a href="#">Login</a>
-        </div>
-        ''', unsafe_allow_html=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
+        if login_return_btn:
+            st.session_state.page = 'login'
     
     def run(self):
         """Main application runner"""
@@ -243,6 +243,9 @@ class MobileAuthApp:
         elif st.session_state.page == 'signup':
             self.signup_page()
 
-# Run the application
+def main():
+    app = MobileAuthApp()
+    app.run()
+
 if __name__ == "__main__":
-    MobileAuthApp()
+    main()

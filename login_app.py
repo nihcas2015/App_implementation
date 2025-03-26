@@ -1,17 +1,14 @@
 import streamlit as st
 import re
 
-class AuthApp:
+class BankingApp:
     def __init__(self):
-        # Set page configuration
-        st.set_page_config(page_title="Login/Register", page_icon=":mobile_phone:", layout="centered")
+        # Initialize session state variables
+        if 'page' not in st.session_state:
+            st.session_state.page = 'home'
         
         # Custom CSS for mobile-like design
         self.apply_custom_css()
-        
-        # Initialize session state for tracking authentication state
-        if 'authenticated' not in st.session_state:
-            st.session_state.authenticated = False
         
         # Run the app
         self.run()
@@ -22,7 +19,7 @@ class AuthApp:
         .stApp {
             max-width: 400px;
             margin: 0 auto;
-            background: linear-gradient(135deg, #ff6b6b, #ff8a5b);
+            background: linear-gradient(135deg, #e0e0e0, #f5f5f5);
             height: 100vh;
         }
         .stTextInput > div > div > input {
@@ -32,14 +29,19 @@ class AuthApp:
             padding: 0 15px;
         }
         .stButton > button {
-            background-color: #ff4500 !important;
+            background: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%) !important;
             color: white !important;
             border-radius: 25px;
             height: 50px;
             width: 100%;
+            border: none;
         }
         .stButton > button:hover {
-            background-color: #ff6347 !important;
+            opacity: 0.9 !important;
+        }
+        .home-container {
+            text-align: center;
+            padding: 50px 20px;
         }
         .login-container {
             background-color: white;
@@ -50,48 +52,62 @@ class AuthApp:
         </style>
         """, unsafe_allow_html=True)
     
-    def validate_email(self, email):
-        """Basic email validation"""
-        email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        return re.match(email_regex, email) is not None
-    
-    def validate_phone(self, phone):
-        """Basic phone number validation"""
-        phone_regex = r'^\+?1?\d{10,14}$'
-        return re.match(phone_regex, phone) is not None
-    
-    def validate_password(self, password):
-        """Password validation (at least 8 characters, one uppercase, one number)"""
-        return (len(password) >= 8 and 
-                any(c.isupper() for c in password) and 
-                any(c.isdigit() for c in password))
+    def home_page(self):
+        """Render home page"""
+        st.markdown('<div class="home-container">', unsafe_allow_html=True)
+        
+        # Stylized logo or app name
+        st.markdown('<h1 style="color:#6a11cb;">Money Move</h1>', unsafe_allow_html=True)
+        
+        # App description
+        st.markdown('<p style="color:#666;">Keep your money moving with you</p>', unsafe_allow_html=True)
+        
+        # Get Started button
+        if st.button("Get Started"):
+            st.session_state.page = 'login'
+            st.experimental_rerun()
+        
+        # Platform buttons
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown('<div style="text-align:center;"><img src="https://upload.wikimedia.org/wikipedia/commons/f/fa/Apple_logo_black.svg" width="50"/></div>', unsafe_allow_html=True)
+        with col2:
+            st.markdown('<div style="text-align:center;"><img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" width="50"/></div>', unsafe_allow_html=True)
+        
+        # Sign in link
+        st.markdown('''
+        <div style="text-align:center; margin-top:20px;">
+            You have an account? <a href="#" style="color:#6a11cb;">Sign in</a>
+        </div>
+        ''', unsafe_allow_html=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
     
     def login_page(self):
         """Render login page"""
         st.markdown('<div class="login-container">', unsafe_allow_html=True)
-        st.markdown('<h2 style="text-align:center; color:#333;">WELCOME!!</h2>', unsafe_allow_html=True)
+        st.markdown('<h2 style="text-align:center; color:#333;">Login</h2>', unsafe_allow_html=True)
         
         # Login form
-        username = st.text_input("Username/Email", key="login_username")
+        username = st.text_input("Username", key="login_username")
         password = st.text_input("Password", type="password", key="login_password")
         
-        login_btn = st.button("Login", key="login_btn")
+        login_btn = st.button("Login")
         
         if login_btn:
-            if not username or not password:
-                st.error("Please fill in all fields")
+            if username and password:
+                st.session_state.page = 'register'
+                st.experimental_rerun()
             else:
-                # Placeholder authentication logic
-                st.success("Login Successful!")
-                st.session_state.authenticated = True
+                st.error("Please fill in all fields")
         
-        # Additional links
+        # Forgot password and signup links
         st.markdown('''
         <div style="text-align:center; margin-top:10px;">
-            <a href="#" style="color:#ff4500; text-decoration:none;">Forgot Password?</a>
+            <a href="#" style="color:#6a11cb; text-decoration:none;">Forgot Password?</a>
         </div>
         <div style="text-align:center; margin-top:10px;">
-            Don't have an Account? <a href="#" style="color:#ff4500;">Register</a>
+            Don't have an Account? <a href="#" style="color:#6a11cb;">Sign Up</a>
         </div>
         ''', unsafe_allow_html=True)
         
@@ -100,62 +116,36 @@ class AuthApp:
     def register_page(self):
         """Render registration page"""
         st.markdown('<div class="login-container">', unsafe_allow_html=True)
-        st.markdown('<h2 style="text-align:center; color:#333;">REGISTER</h2>', unsafe_allow_html=True)
+        st.markdown('<h2 style="text-align:center; color:#333;">Create Account</h2>', unsafe_allow_html=True)
         
         # Registration form
         full_name = st.text_input("Full Name", key="reg_full_name")
-        username_email = st.text_input("Username / Email", key="reg_username")
-        phone = st.text_input("Phone Number", key="reg_phone")
+        client_id = st.text_input("Client ID", key="reg_client_id")
+        username = st.text_input("Username", key="reg_username")
         password = st.text_input("Password", type="password", key="reg_password")
         
-        register_btn = st.button("Sign Up", key="register_btn")
+        register_btn = st.button("Register")
         
         if register_btn:
-            # Validation checks
-            errors = []
-            if not full_name:
-                errors.append("Full name is required")
-            if not username_email or not self.validate_email(username_email):
-                errors.append("Invalid email address")
-            if not phone or not self.validate_phone(phone):
-                errors.append("Invalid phone number")
-            if not password or not self.validate_password(password):
-                errors.append("Password must be at least 8 characters with one uppercase and one number")
-            
-            if errors:
-                for error in errors:
-                    st.error(error)
-            else:
+            # Basic validation
+            if full_name and client_id and username and password:
                 st.success("Registration Successful!")
-                st.session_state.authenticated = True
-        
-        # Already a member link
-        st.markdown('''
-        <div style="text-align:center; margin-top:10px;">
-            Already A Member? <a href="#" style="color:#ff4500;">Sign in</a>
-        </div>
-        ''', unsafe_allow_html=True)
+                # You would typically add database or authentication logic here
+            else:
+                st.error("Please fill in all fields")
         
         st.markdown('</div>', unsafe_allow_html=True)
     
     def run(self):
         """Main application runner"""
-        # Create tabs for Login and Register
-        tab1, tab2 = st.tabs(["Login", "Register"])
-        
-        with tab1:
+        # Render the appropriate page based on session state
+        if st.session_state.page == 'home':
+            self.home_page()
+        elif st.session_state.page == 'login':
             self.login_page()
-        
-        with tab2:
+        elif st.session_state.page == 'register':
             self.register_page()
-        
-        # Optional: Add a logout or dashboard page for authenticated users
-        if st.session_state.authenticated:
-            st.sidebar.title("Dashboard")
-            if st.sidebar.button("Logout"):
-                st.session_state.authenticated = False
-                st.experimental_rerun()
 
 # Run the application
 if __name__ == "__main__":
-    AuthApp()
+    BankingApp()

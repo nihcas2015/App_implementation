@@ -4,6 +4,8 @@ import os
 import json
 from datetime import datetime
 import uuid
+import pdfplumber
+import pandas as pd
 
 class MobileAuthApp:
     def __init__(self):
@@ -263,7 +265,65 @@ class MobileAuthApp:
         os.makedirs(user_dir, exist_ok=True)
         return user_dir
     
-    def save_pdf_metadata(self, username, filename, original_filename, description):
+    def extract_table_pdfplumber(self, pdf_path, password=None):
+        """Extract tables from PDF using pdfplumber"""
+        all_data = []
+        column_names = None
+        
+        try:
+            # Open PDF with password if provided
+            with pdfplumber.open(pdf_path, password=password) as pdf:
+                # Process each page
+                for page_num, page in enumerate(pdf.pages, 1):
+                    extracted_table = page.extract_table()
+                    
+                    if extracted_table:
+                        # For the first table with data, get column names
+                        if column_names is None and len(extracted_table) > 0:
+                            column_names = extracted_table[0]
+                            # Add data rows from first table (skip header row)
+                            all_data.extend(extracted_table[1:])
+                        else:
+                            # Check if subsequent tables have the same column structure
+                            if len(extracted_table) > 0:
+                                if extracted_table[0] == column_names:
+                                    # Same structure, skip header
+                                    all_data.extend(extracted_table[1:])
+                                else:
+                                    # Different header structure, try to map columns or add as is
+                                    all_data.extend(extracted_table)
+                                    
+                        st.write(f"Processed page {page_num}: Found {len(extracted_table)} rows")
+
+            # Create DataFrame from collected data
+            if all_data and column_names:
+                # Create DataFrame with consistent column names
+                all_data = [row[:5] + row[6:] if len(row) > 5 else row for row in all_data]
+                df = pd.DataFrame(all_data, columns=column_names)
+                
+                # Clean data - convert numeric columns
+                for col in df.columns:
+                    # Try to convert to numeric if possible
+                    try:
+                        df[col] = pd.to_numeric(df[col])
+                    except:
+                        pass  # Keep as is if conversion fails
+                
+                # Drop NaN rows that don't contain essential information
+                if 'Particulars' in df.columns:
+                    df = df.dropna(subset=['Particulars'])
+                if 'Balance' in df.columns:
+                    df = df.dropna(subset=['Balance'])
+                
+                return df
+            else:
+                return None
+                
+        except Exception as e:
+            st.error(f"Error extracting tables: {e}")
+            return None
+    
+    def save_pdf_metadata(self, username, filename, original_filename):
         """Save metadata about uploaded PDF files"""
         try:
             # Read existing metadata
@@ -276,7 +336,6 @@ class MobileAuthApp:
                 'username': username,
                 'filename': filename,
                 'original_filename': original_filename,
-                'description': description,
                 'upload_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 'file_size': os.path.getsize(filename)
             }
@@ -307,10 +366,11 @@ class MobileAuthApp:
             help="Select a PDF file to upload"
         )
         
-        # Optional file description
-        file_description = st.text_area(
-            "File Description", 
-            help="Provide a brief description of the uploaded PDF"
+        # Optional password for protected PDFs
+        pdf_password = st.text_input(
+            "PDF Password (if protected)", 
+            type="password",
+            help="Leave blank if the PDF is not password-protected"
         )
         
         # File tags or categories
@@ -354,15 +414,29 @@ class MobileAuthApp:
                 # Save metadata including any tags
                 tags = [tag.strip() for tag in file_tags.split(',')] if file_tags else []
                 file_id = self.save_pdf_metadata(
-                    current_username, 
-                    unique_filename, 
+                    current_username,
+                    unique_filename,
                     uploaded_file.name,
-                    file_description,
                 )
                 
                 if file_id:
                     st.success(f"PDF '{uploaded_file.name}' uploaded successfully!")
                     st.info(f"File ID: {file_id}")
+                    
+                    # Process the PDF to extract tables
+                    with st.spinner("Extracting data from PDF..."):
+                        password = pdf_password if pdf_password else None
+                        df = self.extract_table_pdfplumber(unique_filename, password)
+                        
+                        if df is not None:
+                            # Store the DataFrame in session state
+                            st.session_state['extracted_df'] = df
+                            st.session_state['current_pdf'] = unique_filename
+                            st.session_state['page'] = 'view_dataframe'
+                            st.success("Data extracted successfully! View the data table.")
+                            st.rerun()
+                        else:
+                            st.warning("No tables found in the PDF or extraction failed.")
                 else:
                     st.warning("File uploaded but metadata could not be saved.")
             except Exception as e:
@@ -374,6 +448,79 @@ class MobileAuthApp:
         
         if logout_btn:
             # Clear login-related session state
+            if 'current_username' in st.session_state:
+                del st.session_state['current_username']
+            st.session_state['page'] = 'login'
+            st.rerun()
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    def view_dataframe_page(self):
+        """Display the extracted DataFrame from PDF"""
+        st.markdown('<div class="login-container">', unsafe_allow_html=True)
+        st.markdown('<h2 style="text-align:center; color:var(--accent-primary);">Extracted Data</h2>', unsafe_allow_html=True)
+        
+        # Get the DataFrame from session state
+        df = st.session_state.get('extracted_df', None)
+        current_pdf = st.session_state.get('current_pdf', 'Unknown PDF')
+        
+        if df is not None:
+            # Show PDF file name
+            st.write(f"Data from: {os.path.basename(current_pdf)}")
+            
+            # Display DataFrame statistics
+            st.write(f"Found {len(df)} rows and {len(df.columns)} columns")
+            
+            # Add search/filter capability
+            search_term = st.text_input("Search in data", "")
+            
+            # Filter DataFrame if search term is provided
+            filtered_df = df
+            if search_term:
+                filtered_df = df[df.astype(str).apply(
+                    lambda row: row.str.contains(search_term, case=False).any(), axis=1)]
+                st.write(f"Found {len(filtered_df)} matching rows")
+            
+            # Display the DataFrame
+            st.dataframe(filtered_df)
+            
+            # Download options
+            col1, col2 = st.columns(2)
+            with col1:
+                # Download as CSV
+                csv = filtered_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Download as CSV",
+                    data=csv,
+                    file_name=f"extracted_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+            
+            with col2:
+                # Download as Excel
+                excel_file = filtered_df.to_excel(engine='openpyxl', index=False)
+                st.download_button(
+                    label="Download as Excel",
+                    data=excel_file,
+                    file_name=f"extracted_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+        else:
+            st.error("No data available. Please upload a PDF first.")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            back_btn = st.button("Back to Upload")
+        
+        with col2:
+            logout_btn = st.button("Logout")
+        
+        if back_btn:
+            st.session_state['page'] = 'file_upload'
+            st.rerun()
+        
+        if logout_btn:
             if 'current_username' in st.session_state:
                 del st.session_state['current_username']
             st.session_state['page'] = 'login'
@@ -405,7 +552,6 @@ class MobileAuthApp:
                 # Display files in a nice format
                 for file_id, file_data in user_files.items():
                     with st.expander(f"{file_data['original_filename']} ({file_data['upload_date']})"):
-                        st.write(f"Description: {file_data['description']}")
                         st.write(f"Upload date: {file_data['upload_date']}")
                         st.write(f"File size: {file_data['file_size']/1024:.2f} KB")
                         
@@ -454,6 +600,8 @@ class MobileAuthApp:
             self.file_upload_page()
         elif page == 'view_files':
             self.view_files_page()
+        elif page == 'view_dataframe':
+            self.view_dataframe_page()
 
 def main():
     app = MobileAuthApp()

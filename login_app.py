@@ -182,10 +182,11 @@ class MobileAuthApp:
         if login_btn:
             if username and password:
                 if self.validate_login(username, password):
-                    # Use get() method to safely set session state
+                    # Set session state for login
                     st.session_state['current_username'] = username
                     st.session_state['page'] = 'file_upload'
-                    st.experimental_rerun()
+                    # Use st.rerun() instead of st.experimental_rerun()
+                    st.rerun()
                 else:
                     st.error("Invalid username or password")
             else:
@@ -193,6 +194,7 @@ class MobileAuthApp:
         
         if signup_btn:
             st.session_state['page'] = 'signup'
+            st.rerun()
         
         # Forgot password link
         st.markdown('''
@@ -234,6 +236,7 @@ class MobileAuthApp:
                     st.success("Account Created Successfully!")
                     # Redirect to login page
                     st.session_state['page'] = 'login'
+                    st.rerun()
                 else:
                     st.error("Username already exists. Please choose another.")
             else:
@@ -241,6 +244,7 @@ class MobileAuthApp:
         
         if login_return_btn:
             st.session_state['page'] = 'login'
+            st.rerun()
         
         st.markdown('</div>', unsafe_allow_html=True)
     
@@ -307,6 +311,7 @@ class MobileAuthApp:
             if 'current_username' in st.session_state:
                 del st.session_state['current_username']
             st.session_state['page'] = 'login'
+            st.rerun()
         
         st.markdown('</div>', unsafe_allow_html=True)
     

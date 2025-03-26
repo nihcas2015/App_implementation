@@ -19,8 +19,6 @@ class MobileAuthApp:
         self.apply_custom_css()
     
     def apply_custom_css(self):
-        # [Previous CSS remains the same as in the original code]
-        # ... (copying the entire CSS from the previous artifact)
         st.markdown("""
         <style>
         :root {
@@ -184,8 +182,9 @@ class MobileAuthApp:
         if login_btn:
             if username and password:
                 if self.validate_login(username, password):
-                    st.session_state.login_username = username
-                    st.session_state.page = 'file_upload'
+                    # Use get() method to safely set session state
+                    st.session_state['current_username'] = username
+                    st.session_state['page'] = 'file_upload'
                     st.experimental_rerun()
                 else:
                     st.error("Invalid username or password")
@@ -193,7 +192,7 @@ class MobileAuthApp:
                 st.error("Please fill in all fields")
         
         if signup_btn:
-            st.session_state.page = 'signup'
+            st.session_state['page'] = 'signup'
         
         # Forgot password link
         st.markdown('''
@@ -234,14 +233,14 @@ class MobileAuthApp:
                 if self.save_credentials(name, client_id, username, password):
                     st.success("Account Created Successfully!")
                     # Redirect to login page
-                    st.session_state.page = 'login'
+                    st.session_state['page'] = 'login'
                 else:
                     st.error("Username already exists. Please choose another.")
             else:
                 st.error("Please fill in all fields")
         
         if login_return_btn:
-            st.session_state.page = 'login'
+            st.session_state['page'] = 'login'
         
         st.markdown('</div>', unsafe_allow_html=True)
     
@@ -250,6 +249,10 @@ class MobileAuthApp:
         st.markdown('<div class="login-container">', unsafe_allow_html=True)
         st.markdown('<h2 style="text-align:center; color:var(--accent-primary);">PDF Upload</h2>', unsafe_allow_html=True)
         st.markdown('<p style="text-align:center; color:var(--text-secondary);">Upload your PDF files securely</p>', unsafe_allow_html=True)
+        
+        # Retrieve current username from session state
+        current_username = st.session_state.get('current_username', 'Unknown User')
+        st.write(f"Welcome, {current_username}")
         
         # File upload section
         uploaded_file = st.file_uploader(
@@ -282,7 +285,7 @@ class MobileAuthApp:
                 # Generate a unique filename
                 unique_filename = os.path.join(
                     self.upload_dir, 
-                    f"{st.session_state.login_username}_{uploaded_file.name}"
+                    f"{current_username}_{uploaded_file.name}"
                 )
                 
                 # Save the uploaded file
@@ -301,20 +304,22 @@ class MobileAuthApp:
         
         if logout_btn:
             # Clear login-related session state
-            if 'login_username' in st.session_state:
-                del st.session_state.login_username
-            st.session_state.page = 'login'
+            if 'current_username' in st.session_state:
+                del st.session_state['current_username']
+            st.session_state['page'] = 'login'
         
         st.markdown('</div>', unsafe_allow_html=True)
     
     def run(self):
         """Main application runner"""
         # Render the appropriate page based on session state
-        if st.session_state.page == 'login':
+        page = st.session_state.get('page', 'login')
+        
+        if page == 'login':
             self.login_page()
-        elif st.session_state.page == 'signup':
+        elif page == 'signup':
             self.signup_page()
-        elif st.session_state.page == 'file_upload':
+        elif page == 'file_upload':
             self.file_upload_page()
 
 def main():

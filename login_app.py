@@ -6,6 +6,7 @@ from datetime import datetime
 import uuid
 import pdfplumber
 import pandas as pd
+from io import BytesIO  # Add this import at the top
 
 class MobileAuthApp:
     def __init__(self):
@@ -497,11 +498,15 @@ class MobileAuthApp:
                 )
             
             with col2:
-                # Download as Excel
-                excel_file = filtered_df.to_excel(engine='openpyxl', index=False)
+                # Download as Excel - Fixed implementation using BytesIO
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    filtered_df.to_excel(writer, index=False)
+                output.seek(0)  # Go to the beginning of the BytesIO buffer
+                
                 st.download_button(
                     label="Download as Excel",
-                    data=excel_file,
+                    data=output,
                     file_name=f"extracted_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )

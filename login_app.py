@@ -304,6 +304,71 @@ class MobileAuthApp:
             
         return cleaned_summary
 
+    def extract_category_data_for_gemini(self, df):
+        """Extract category data from DataFrame in a format optimized for Gemini AI"""
+        if df is None or 'Category' not in df.columns:
+            return "No category data available."
+            
+        try:
+            # Create a detailed summary specifically formatted for Gemini
+            gemini_summary = "Transaction Analysis:\n\n"
+            
+            # 1. Basic transaction stats
+            gemini_summary += f"Total Transactions: {len(df)}\n"
+            gemini_summary += f"Date Range: {df['Date'].min()} to {df['Date'].max() if 'Date' in df.columns else 'Unknown'}\n\n"
+            
+            # 2. Category breakdown
+            gemini_summary += "## Category Distribution:\n"
+            category_counts = df['Category'].value_counts()
+            total_count = len(df)
+            for category, count in category_counts.items():
+                percentage = (count / total_count) * 100
+                gemini_summary += f"* {category}: {count} transactions ({percentage:.1f}%)\n"
+            
+            # 3. Financial summary - if withdrawal/deposit columns exist
+            if 'Withdrawl' in df.columns and 'Deposit' in df.columns:
+                # Convert to numeric if they aren't already
+                withdrawals = pd.to_numeric(df['Withdrawl'], errors='coerce').fillna(0)
+                deposits = pd.to_numeric(df['Deposit'], errors='coerce').fillna(0)
+                
+                total_expense = withdrawals.sum()
+                total_income = deposits.sum()
+                net_flow = total_income - total_expense
+                
+                gemini_summary += "\n## Financial Summary:\n"
+                gemini_summary += f"* Total Expenses: ₹{total_expense:.2f}\n"
+                gemini_summary += f"* Total Income: ₹{total_income:.2f}\n"
+                gemini_summary += f"* Net Cash Flow: ₹{net_flow:.2f} ({net_flow >= 0 and 'Positive' or 'Negative'})\n\n"
+                
+                # 4. Category-wise spending
+                gemini_summary += "## Spending by Category:\n"
+                category_expenses = df.groupby('Category')['Withdrawl'].sum().sort_values(ascending=False)
+                for category, amount in category_expenses.items():
+                    if amount > 0:  # Only include categories with expenses
+                        percent = (amount / total_expense) * 100
+                        gemini_summary += f"* {category}: ₹{amount:.2f} ({percent:.1f}% of total expenses)\n"
+                
+                # 5. Category-wise income
+                if deposits.sum() > 0:
+                    gemini_summary += "\n## Income by Category:\n"
+                    category_income = df.groupby('Category')['Deposit'].sum().sort_values(ascending=False)
+                    for category, amount in category_income.items():
+                        if amount > 0:  # Only include categories with income
+                            percent = (amount / total_income) * 100
+                            gemini_summary += f"* {category}: ₹{amount:.2f} ({percent:.1f}% of total income)\n"
+            
+            # 6. Common merchants/particulars if available
+            if 'Particulars' in df.columns:
+                gemini_summary += "\n## Common Transaction Descriptions:\n"
+                common_descriptions = df['Particulars'].value_counts().head(5)
+                for desc, count in common_descriptions.items():
+                    gemini_summary += f"* \"{desc}\": {count} transactions\n"
+            
+            return gemini_summary
+        
+        except Exception as e:
+            return f"Error generating category data for Gemini: {str(e)}"
+
     def extract_table_pdfplumber(self, pdf_path, password=None):
         """Extract tables from PDF using pdfplumber"""
         all_data = []
@@ -357,12 +422,20 @@ class MobileAuthApp:
                 # Categorize transactions using the TransactionCategorizer
                 try:
                     categorized_df = self.transaction_categorizer.categorize_dataframe(df)
+                    
+                    # Store the categorized dataframe in session state
+                    st.session_state['categorized_df'] = categorized_df
+                    
                     # Create a summary of spending by category
                     result = self.generate_category_summary(categorized_df)
                     st.session_state['category_summary'] = result
                     
-                    # Generate financial advice based on the summary
-                    prepared_summary = self.prepare_transaction_summary(result)
+                    # Extract detailed category data for Gemini
+                    gemini_data = self.extract_category_data_for_gemini(categorized_df)
+                    st.session_state['gemini_category_data'] = gemini_data
+                    
+                    # Generate financial advice based on the detailed category data
+                    prepared_summary = self.prepare_transaction_summary(gemini_data)
                     financial_advice = self.get_financial_advice(prepared_summary)
                     st.session_state['financial_advice'] = financial_advice
                     
@@ -657,6 +730,13 @@ class MobileAuthApp:
             with tab3:
                 # Show financial advice
                 financial_advice = st.session_state.get('financial_advice', 'Financial advice not generated yet.')
+                
+                # Add a debug option to see raw data sent to Gemini
+                if st.checkbox("Show Raw Data Sent to Gemini"):
+                    gemini_data = st.session_state.get('gemini_category_data', 'No data was sent to Gemini yet.')
+                    st.subheader("Raw Transaction Data Sent to Gemini:")
+                    st.text_area("Data", value=gemini_data, height=300, key="gemini_raw_data")
+                
                 st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
                 st.markdown("## 💰 Your Financial Insights")
                 st.markdown("Below is personalized financial advice based on your transaction data:")
@@ -665,9 +745,10 @@ class MobileAuthApp:
                 
                 # Add a button to regenerate advice
                 if st.button("Regenerate Financial Advice"):
-                    if category_summary:
+                    if gemini_data := st.session_state.get('gemini_category_data'):
                         with st.spinner("Generating new financial insights..."):
-                            new_advice = self.get_financial_advice(category_summary)
+                            prepared_summary = self.prepare_transaction_summary(gemini_data)
+                            new_advice = self.get_financial_advice(prepared_summary)
                             st.session_state['financial_advice'] = new_advice
                             st.rerun()
                     else:
@@ -760,20 +841,23 @@ class MobileAuthApp:
             return "Financial advice not available. Google API Key is missing."
             
         try:
+            # Log what we're sending to Gemini for debugging
+            print(f"Sending to Gemini: {transaction_summary[:100]}...")
+            
             prompt = f"""
-            You are a professional financial advisor. Based on the following bank transaction summary, 
+            You are a professional financial advisor. Based on the following detailed bank transaction analysis, 
             provide specific, actionable financial advice in bullet points.
             
             Focus on:
             - Spending patterns that could be optimized
-            - Savings opportunities
-            - Budget recommendations
+            - Savings opportunities based on the category breakdown
+            - Budget recommendations considering income and expenses
             - Investment suggestions based on cash flow
-            - Any concerning financial behaviors
+            - Any concerning financial behaviors visible in the data
             
             Make your advice practical and specific to this data. Be direct and helpful.
             
-            Transaction Summary:
+            Transaction Analysis:
             {transaction_summary}
             
             Provide your advice in bullet points, with clear headings for different sections.
@@ -783,7 +867,9 @@ class MobileAuthApp:
             
             # Handle different response formats from Gemini models
             if hasattr(response, 'text'):
-                return response.text
+                advice_text = response.text
+                print(f"Received advice text, length: {len(advice_text)} chars")
+                return advice_text
             elif isinstance(response, dict) and 'candidates' in response:
                 # Handle dictionary response format with candidates
                 candidates = response['candidates']

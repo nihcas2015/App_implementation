@@ -314,3 +314,23 @@ class TransactionCategorizer:
         except Exception as e:
             print(f"Error processing CSV file: {e}")
             return None
+
+
+from transaction_categorizer import TransactionCategorizer
+import pandas as pd
+
+# Create sample data
+data = {
+    'Date': ['15-Mar-2025', '16-Mar-2025', '17-Mar-2025'],
+    'Particulars': ['UPI/123456/PAYMENT', 'UPI/JOHNDOE/GPAY', 'POS AMAZON'],
+    'Withdrawl': [150, 500, 2000],
+    'Deposit': [0, 0, 0]
+}
+df = pd.DataFrame(data)
+
+# Initialize categorizer
+categorizer = TransactionCategorizer()
+
+# Categorize dataframe
+categorized_df = categorizer.categorize_dataframe(df)
+print(categorized_df)

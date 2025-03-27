@@ -46,8 +46,8 @@ class MobileAuthApp:
                 json.dump({}, f)
         
         # Initialize transaction categorizer
-        model_path = os.path.join(os.path.dirname(__file__), 'transaction_categorizer_model.pkl')
-        preprocessor_path = os.path.join(os.path.dirname(__file__), 'transaction_preprocessor.pkl')
+        model_path = os.path.join(os.path.dirname(__file__), r'C:\Users\nihca\Downloads\App\App_implementation\transaction_categorizer_model.pkl')
+        preprocessor_path = os.path.join(os.path.dirname(__file__), r'C:\Users\nihca\Downloads\App\App_implementation\transaction_preprocessor.pkl')
         self.transaction_categorizer = TransactionCategorizer(model_path if os.path.exists(model_path) else None, 
                                                             preprocessor_path if os.path.exists(preprocessor_path) else None)
         
@@ -423,21 +423,12 @@ class MobileAuthApp:
                 try:
                     categorized_df = self.transaction_categorizer.categorize_dataframe(df)
                     
-                    # Store the categorized dataframe in session state
-                    st.session_state['categorized_df'] = categorized_df
+                    # Store only the DataFrame directly in session state
+                    st.session_state['extracted_df'] = categorized_df
+                    st.session_state['current_pdf'] = unique_filename
                     
-                    # Create a summary of spending by category
-                    result = self.generate_category_summary(categorized_df)
-                    st.session_state['category_summary'] = result
-                    
-                    # Extract detailed category data for Gemini
-                    gemini_data = self.extract_category_data_for_gemini(categorized_df)
-                    st.session_state['gemini_category_data'] = gemini_data
-                    
-                    # Generate financial advice based on the detailed category data
-                    prepared_summary = self.prepare_transaction_summary(gemini_data)
-                    financial_advice = self.get_financial_advice(prepared_summary)
-                    st.session_state['financial_advice'] = financial_advice
+                    # Don't store other derived data in session state
+                    # It will be generated on-demand when needed
                     
                     return categorized_df
                 except Exception as e:
@@ -647,7 +638,6 @@ class MobileAuthApp:
         # Get the DataFrame from session state
         df = st.session_state.get('extracted_df', None)
         current_pdf = st.session_state.get('current_pdf', 'Unknown PDF')
-        category_summary = st.session_state.get('category_summary', None)
         
         if df is not None:
             # Show PDF file name
@@ -701,10 +691,12 @@ class MobileAuthApp:
             
             with tab2:
                 if 'Category' in df.columns:
+                    # Generate category summary on-demand directly from the DataFrame
+                    category_summary = self.generate_category_summary(df)
+                    
                     # Show category summary
-                    if category_summary:
-                        st.subheader("Transaction Summary")
-                        st.text(category_summary)
+                    st.subheader("Transaction Summary")
+                    st.text(category_summary)
                     
                     # Show category distribution chart
                     st.subheader("Category Distribution")
@@ -728,33 +720,39 @@ class MobileAuthApp:
                     st.info("No category information available. Unable to show analysis.")
             
             with tab3:
-                # Show financial advice
-                financial_advice = st.session_state.get('financial_advice', 'Financial advice not generated yet.')
-                
-                # Add a debug option to see raw data sent to Gemini
-                if st.checkbox("Show Raw Data Sent to Gemini"):
-                    gemini_data = st.session_state.get('gemini_category_data', 'No data was sent to Gemini yet.')
-                    st.subheader("Raw Transaction Data Sent to Gemini:")
-                    st.text_area("Data", value=gemini_data, height=300, key="gemini_raw_data")
-                
-                st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
-                st.markdown("## 💰 Your Financial Insights")
-                st.markdown("Below is personalized financial advice based on your transaction data:")
-                st.markdown(financial_advice)
-                st.markdown("</div>", unsafe_allow_html=True)
-                
-                # Add a button to regenerate advice
-                if st.button("Regenerate Financial Advice"):
-                    if gemini_data := st.session_state.get('gemini_category_data'):
+                # Generate financial advice directly from the DataFrame instead of retrieving from session state
+                if 'Category' in df.columns:
+                    # Extract the detailed category data for Gemini directly
+                    gemini_data = self.extract_category_data_for_gemini(df)
+                    
+                    # Add a debug option to see raw data sent to Gemini
+                    if st.checkbox("Show Raw Data Sent to Gemini"):
+                        st.subheader("Raw Transaction Data Sent to Gemini:")
+                        st.text_area("Data", value=gemini_data, height=300, key="gemini_raw_data")
+                    
+                    # Generate advice on-demand
+                    with st.spinner("Generating financial insights..."):
+                        prepared_summary = self.prepare_transaction_summary(gemini_data)
+                        financial_advice = self.get_financial_advice(prepared_summary)
+                        
+                    st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
+                    st.markdown("## 💰 Your Financial Insights")
+                    st.markdown("Below is personalized financial advice based on your transaction data:")
+                    st.markdown(financial_advice)
+                    st.markdown("</div>", unsafe_allow_html=True)
+                    
+                    # Add a button to regenerate advice
+                    if st.button("Regenerate Financial Advice"):
                         with st.spinner("Generating new financial insights..."):
                             prepared_summary = self.prepare_transaction_summary(gemini_data)
                             new_advice = self.get_financial_advice(prepared_summary)
-                            st.session_state['financial_advice'] = new_advice
-                            st.rerun()
-                    else:
-                        st.error("No transaction summary available to generate advice.")
-        else:
-            st.error("No data available. Please upload a PDF first.")
+                            # Display the new advice directly without session state
+                            st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
+                            st.markdown("## 💰 Your Updated Financial Insights")
+                            st.markdown(new_advice)
+                            st.markdown("</div>", unsafe_allow_html=True)
+                else:
+                    st.info("No category information available. Unable to generate financial advice.")
         
         col1, col2 = st.columns(2)
         
@@ -977,8 +975,7 @@ class MobileAuthApp:
         st.markdown('<div class="login-container">', unsafe_allow_html=True)
         st.markdown('<h2 style="text-align:center; color:var(--accent-primary);">Financial Advice</h2>', unsafe_allow_html=True)
         
-        financial_advice = st.session_state.get('financial_advice', None)
-        category_summary = st.session_state.get('category_summary', None)
+        # Get the DataFrame directly from session state instead of depending on multiple state items
         extracted_df = st.session_state.get('extracted_df', None)
         
         # Add AI model status indicator
@@ -988,51 +985,56 @@ class MobileAuthApp:
             st.success(f"AI Model Status: Ready")
         else:
             st.error(f"AI Model Status: Issue detected - {status_msg}")
-            
-        # Check if financial advice is missing or error message
-        advice_missing = (financial_advice is None or
-                         financial_advice.startswith("Error generating") or
-                         financial_advice.startswith("Financial advice not available"))
         
-        if not advice_missing:
-            # Display the advice from the model
-            st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
-            st.markdown("## 💰 Your Personalized Financial Insights")
-            st.markdown(financial_advice)
-            st.markdown("</div>", unsafe_allow_html=True)
-        else:
-            # Show fallback analysis if model failed
-            st.warning("AI-powered financial advice is not available. Showing basic analysis instead.")
+        if extracted_df is not None and 'Category' in extracted_df.columns:
+            # Generate all data on-demand without depending on session state
+            gemini_data = self.extract_category_data_for_gemini(extracted_df)
+            prepared_summary = self.prepare_transaction_summary(gemini_data)
             
-            if extracted_df is not None:
+            try:
+                # Generate advice directly using the Gemini model
+                with st.spinner("Generating financial insights..."):
+                    financial_advice = self.get_financial_advice(prepared_summary)
+                
+                # Display the advice
+                st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
+                st.markdown("## 💰 Your Personalized Financial Insights")
+                st.markdown(financial_advice)
+                st.markdown("</div>", unsafe_allow_html=True)
+            except Exception as e:
+                # If Gemini fails, use fallback analysis
+                st.warning(f"AI-powered financial advice failed: {str(e)}. Showing basic analysis instead.")
                 fallback_analysis = self.generate_fallback_analysis(extracted_df)
+                
                 st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
                 st.markdown(fallback_analysis)
                 st.markdown("</div>", unsafe_allow_html=True)
                 
                 # Option to retry with AI
                 if st.button("Try Again with AI"):
-                    if category_summary:
-                        with st.spinner("Generating AI financial insights..."):
-                            try:
-                                new_advice = self.get_financial_advice(category_summary)
-                                st.session_state['financial_advice'] = new_advice
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Failed to generate AI advice: {str(e)}")
-                    else:
-                        st.error("No transaction summary available to generate advice.")
-            else:
-                st.error("No transaction data available. Please upload and analyze a statement first.")
+                    with st.spinner("Generating AI financial insights..."):
+                        try:
+                            new_advice = self.get_financial_advice(prepared_summary)
+                            st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
+                            st.markdown("## 💰 Fresh Financial Insights")
+                            st.markdown(new_advice)
+                            st.markdown("</div>", unsafe_allow_html=True)
+                        except Exception as retry_e:
+                            st.error(f"Failed to generate AI advice: {str(retry_e)}")
+        else:
+            st.error("No transaction data available. Please upload and analyze a statement first.")
         
-        # Add options to customize advice - show regardless of which analysis is displayed
-        st.subheader("Need more specific advice?")
-        specific_topic = st.selectbox("Choose a topic:", 
-                                    ["Saving Strategies", "Debt Management", "Investment Options", 
-                                     "Budget Planning", "Expense Reduction"])
-        
-        if st.button("Get Specific Advice"):
-            if category_summary:
+        # Add options to customize advice
+        if extracted_df is not None:
+            st.subheader("Need more specific advice?")
+            specific_topic = st.selectbox("Choose a topic:", 
+                                        ["Saving Strategies", "Debt Management", "Investment Options", 
+                                         "Budget Planning", "Expense Reduction"])
+            
+            if st.button("Get Specific Advice"):
+                # Generate category summary directly from DataFrame for specific topics
+                category_summary = self.generate_category_summary(extracted_df)
+                
                 with st.spinner(f"Generating advice on {specific_topic}..."):
                     try:
                         if gemini_model is not None:
@@ -1061,8 +1063,6 @@ class MobileAuthApp:
                             st.markdown("</div>", unsafe_allow_html=True)
                     except Exception as e:
                         st.error(f"Error generating advice: {str(e)}")
-            else:
-                st.error("No transaction summary available to generate advice.")
         
         col1, col2 = st.columns(2)
         

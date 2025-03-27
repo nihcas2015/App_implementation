@@ -7,6 +7,24 @@ import uuid
 import pdfplumber
 import pandas as pd
 from io import BytesIO  # Add this import at the top
+import matplotlib.pyplot as plt
+import seaborn as sns
+from transaction_categorizer import TransactionCategorizer
+import google.generativeai as genai
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Configure Gemini AI
+GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
+if GOOGLE_API_KEY:
+    genai.configure(api_key=GOOGLE_API_KEY)
+    # Initialize the model
+    gemini_model = genai.GenerativeModel('gemini-2.0-flash')
+else:
+    gemini_model = None
+    st.warning("Financial advice features will not be available.")
 
 class MobileAuthApp:
     def __init__(self):
@@ -26,6 +44,12 @@ class MobileAuthApp:
         if not os.path.exists(self.pdf_metadata_file):
             with open(self.pdf_metadata_file, 'w') as f:
                 json.dump({}, f)
+        
+        # Initialize transaction categorizer
+        model_path = os.path.join(os.path.dirname(__file__), 'transaction_categorizer_model.pkl')
+        preprocessor_path = os.path.join(os.path.dirname(__file__), 'transaction_preprocessor.pkl')
+        self.transaction_categorizer = TransactionCategorizer(model_path if os.path.exists(model_path) else None, 
+                                                            preprocessor_path if os.path.exists(preprocessor_path) else None)
         
         # Custom CSS for dark-themed mobile-like design
         self.apply_custom_css()
@@ -266,6 +290,20 @@ class MobileAuthApp:
         os.makedirs(user_dir, exist_ok=True)
         return user_dir
     
+    def prepare_transaction_summary(self, summary):
+        """Prepare transaction summary for AI processing by cleaning and formatting it"""
+        if summary is None:
+            return "No transaction data available."
+            
+        # Remove any potentially problematic characters or formatting
+        cleaned_summary = summary.replace('\r', ' ').replace('\t', ' ')
+        
+        # Limit length if needed (Gemini has token limits)
+        if len(cleaned_summary) > 8000:  # Arbitrary limit to avoid token issues
+            cleaned_summary = cleaned_summary[:8000] + "...(summary truncated)"
+            
+        return cleaned_summary
+
     def extract_table_pdfplumber(self, pdf_path, password=None):
         """Extract tables from PDF using pdfplumber"""
         all_data = []
@@ -316,13 +354,85 @@ class MobileAuthApp:
                 if 'Balance' in df.columns:
                     df = df.dropna(subset=['Balance'])
                 
-                return df
+                # Categorize transactions using the TransactionCategorizer
+                try:
+                    categorized_df = self.transaction_categorizer.categorize_dataframe(df)
+                    # Create a summary of spending by category
+                    result = self.generate_category_summary(categorized_df)
+                    st.session_state['category_summary'] = result
+                    
+                    # Generate financial advice based on the summary
+                    prepared_summary = self.prepare_transaction_summary(result)
+                    financial_advice = self.get_financial_advice(prepared_summary)
+                    st.session_state['financial_advice'] = financial_advice
+                    
+                    return categorized_df
+                except Exception as e:
+                    st.error(f"Error categorizing transactions: {e}")
+                    return df
             else:
                 return None
                 
         except Exception as e:
             st.error(f"Error extracting tables: {e}")
             return None
+
+    def generate_category_summary(self, df):
+        """Generate a summary of spending by category"""
+        if 'Category' not in df.columns:
+            return "No category data available"
+            
+        try:
+            # Create a copy of the DataFrame to avoid modifying the original
+            summary_df = df.copy()
+            
+            # Handle withdrawals and deposits if they exist
+            if 'Withdrawl' in summary_df.columns and 'Deposit' in summary_df.columns:
+                # Convert to numeric if they aren't already
+                summary_df['Withdrawl'] = pd.to_numeric(summary_df['Withdrawl'], errors='coerce').fillna(0)
+                summary_df['Deposit'] = pd.to_numeric(summary_df['Deposit'], errors='coerce').fillna(0)
+                
+                # Calculate total withdrawals by category (expenses)
+                category_expenses = summary_df.groupby('Category')['Withdrawl'].sum().sort_values(ascending=False)
+                
+                # Calculate total deposits by category (income)
+                category_income = summary_df.groupby('Category')['Deposit'].sum().sort_values(ascending=False)
+                
+                # Generate summary text
+                summary_text = "Transaction Summary:\n\n"
+                
+                summary_text += "Expenses by Category:\n"
+                for category, amount in category_expenses.items():
+                    if amount > 0:  # Only include categories with expenses
+                        summary_text += f"- {category}: ₹{amount:.2f}\n"
+                
+                summary_text += "\nIncome by Category:\n"
+                for category, amount in category_income.items():
+                    if amount > 0:  # Only include categories with income
+                        summary_text += f"- {category}: ₹{amount:.2f}\n"
+                
+                # Calculate totals
+                total_expense = summary_df['Withdrawl'].sum()
+                total_income = summary_df['Deposit'].sum()
+                net_flow = total_income - total_expense
+                
+                summary_text += f"\nTotal Expense: ₹{total_expense:.2f}"
+                summary_text += f"\nTotal Income: ₹{total_income:.2f}"
+                summary_text += f"\nNet Cash Flow: ₹{net_flow:.2f} ({'Positive' if net_flow >= 0 else 'Negative'})"
+                
+                return summary_text
+            else:
+                # If no withdrawals/deposits columns, just count transactions by category
+                category_counts = df['Category'].value_counts()
+                
+                summary_text = "Transaction Categories:\n\n"
+                for category, count in category_counts.items():
+                    summary_text += f"- {category}: {count} transactions\n"
+                
+                return summary_text
+                
+        except Exception as e:
+            return f"Error generating summary: {str(e)}"
     
     def save_pdf_metadata(self, username, filename, original_filename):
         """Save metadata about uploaded PDF files"""
@@ -464,6 +574,7 @@ class MobileAuthApp:
         # Get the DataFrame from session state
         df = st.session_state.get('extracted_df', None)
         current_pdf = st.session_state.get('current_pdf', 'Unknown PDF')
+        category_summary = st.session_state.get('category_summary', None)
         
         if df is not None:
             # Show PDF file name
@@ -472,44 +583,95 @@ class MobileAuthApp:
             # Display DataFrame statistics
             st.write(f"Found {len(df)} rows and {len(df.columns)} columns")
             
-            # Add search/filter capability
-            search_term = st.text_input("Search in data", "")
+            # Display tabs for data view, analysis, and financial advice
+            tab1, tab2, tab3 = st.tabs(["Data", "Analysis", "Financial Advice"])
             
-            # Filter DataFrame if search term is provided
-            filtered_df = df
-            if search_term:
-                filtered_df = df[df.astype(str).apply(
-                    lambda row: row.str.contains(search_term, case=False).any(), axis=1)]
-                st.write(f"Found {len(filtered_df)} matching rows")
-            
-            # Display the DataFrame
-            st.dataframe(filtered_df)
-            
-            # Download options
-            col1, col2 = st.columns(2)
-            with col1:
-                # Download as CSV
-                csv = filtered_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="Download as CSV",
-                    data=csv,
-                    file_name=f"extracted_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
-            
-            with col2:
-                # Download as Excel - Fixed implementation using BytesIO
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    filtered_df.to_excel(writer, index=False)
-                output.seek(0)  # Go to the beginning of the BytesIO buffer
+            with tab1:
+                # Add search/filter capability
+                search_term = st.text_input("Search in data", "")
                 
-                st.download_button(
-                    label="Download as Excel",
-                    data=output,
-                    file_name=f"extracted_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                # Filter DataFrame if search term is provided
+                filtered_df = df
+                if search_term:
+                    filtered_df = df[df.astype(str).apply(
+                        lambda row: row.str.contains(search_term, case=False).any(), axis=1)]
+                    st.write(f"Found {len(filtered_df)} matching rows")
+                
+                # Display the DataFrame
+                st.dataframe(filtered_df)
+                
+                # Download options
+                col1, col2 = st.columns(2)
+                with col1:
+                    # Download as CSV
+                    csv = filtered_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="Download as CSV",
+                        data=csv,
+                        file_name=f"extracted_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+                
+                with col2:
+                    # Download as Excel - Fixed implementation using BytesIO
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        filtered_df.to_excel(writer, index=False)
+                    output.seek(0)  # Go to the beginning of the BytesIO buffer
+                    
+                    st.download_button(
+                        label="Download as Excel",
+                        data=output,
+                        file_name=f"extracted_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+            
+            with tab2:
+                if 'Category' in df.columns:
+                    # Show category summary
+                    if category_summary:
+                        st.subheader("Transaction Summary")
+                        st.text(category_summary)
+                    
+                    # Show category distribution chart
+                    st.subheader("Category Distribution")
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    category_counts = df['Category'].value_counts()
+                    sns.barplot(x=category_counts.index, y=category_counts.values, ax=ax)
+                    plt.xticks(rotation=45, ha='right')
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    
+                    # If we have withdrawal/deposit data, show spending by category
+                    if 'Withdrawl' in df.columns:
+                        st.subheader("Spending by Category")
+                        fig2, ax2 = plt.subplots(figsize=(10, 6))
+                        category_spending = df.groupby('Category')['Withdrawl'].sum().sort_values(ascending=False)
+                        sns.barplot(x=category_spending.index, y=category_spending.values, ax=ax2)
+                        plt.xticks(rotation=45, ha='right')
+                        plt.tight_layout()
+                        st.pyplot(fig2)
+                else:
+                    st.info("No category information available. Unable to show analysis.")
+            
+            with tab3:
+                # Show financial advice
+                financial_advice = st.session_state.get('financial_advice', 'Financial advice not generated yet.')
+                st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
+                st.markdown("## 💰 Your Financial Insights")
+                st.markdown("Below is personalized financial advice based on your transaction data:")
+                st.markdown(financial_advice)
+                st.markdown("</div>", unsafe_allow_html=True)
+                
+                # Add a button to regenerate advice
+                if st.button("Regenerate Financial Advice"):
+                    if category_summary:
+                        with st.spinner("Generating new financial insights..."):
+                            new_advice = self.get_financial_advice(category_summary)
+                            st.session_state['financial_advice'] = new_advice
+                            st.rerun()
+                    else:
+                        st.error("No transaction summary available to generate advice.")
         else:
             st.error("No data available. Please upload a PDF first.")
         
@@ -592,6 +754,298 @@ class MobileAuthApp:
         
         st.markdown('</div>', unsafe_allow_html=True)
     
+    def get_financial_advice(self, transaction_summary):
+        """Generate financial advice using Gemini AI based on transaction summary"""
+        if not GOOGLE_API_KEY or gemini_model is None:
+            return "Financial advice not available. Google API Key is missing."
+            
+        try:
+            prompt = f"""
+            You are a professional financial advisor. Based on the following bank transaction summary, 
+            provide specific, actionable financial advice in bullet points.
+            
+            Focus on:
+            - Spending patterns that could be optimized
+            - Savings opportunities
+            - Budget recommendations
+            - Investment suggestions based on cash flow
+            - Any concerning financial behaviors
+            
+            Make your advice practical and specific to this data. Be direct and helpful.
+            
+            Transaction Summary:
+            {transaction_summary}
+            
+            Provide your advice in bullet points, with clear headings for different sections.
+            """
+            
+            response = gemini_model.generate_content(prompt)
+            
+            # Handle different response formats from Gemini models
+            if hasattr(response, 'text'):
+                return response.text
+            elif isinstance(response, dict) and 'candidates' in response:
+                # Handle dictionary response format with candidates
+                candidates = response['candidates']
+                if candidates and len(candidates) > 0:
+                    if 'content' in candidates[0] and 'parts' in candidates[0]['content']:
+                        parts = candidates[0]['content']['parts']
+                        if parts and len(parts) > 0:
+                            return parts[0]['text']
+            elif isinstance(response, dict) and 'text' in response:
+                # Direct text in dictionary format
+                return response['text']
+            elif hasattr(response, 'candidates') and len(response.candidates) > 0:
+                # Handle object with candidates attribute
+                if hasattr(response.candidates[0], 'content'):
+                    return response.candidates[0].content.text
+            elif isinstance(response, str):
+                # Already a string
+                return response
+            
+            # If we got here, try to convert the whole response to a string
+            try:
+                return str(response)
+            except:
+                # Last resort fallback
+                return "Unable to process the AI model response. Using fallback analysis."
+                
+        except Exception as e:
+            st.warning(f"Debug info: {type(e).__name__}: {str(e)}")
+            return f"Error generating financial advice: {str(e)}"
+
+    def generate_fallback_analysis(self, df):
+        """Generate basic analysis if Gemini model fails to provide analysis"""
+        if df is None or 'Category' not in df.columns:
+            return "Cannot generate analysis without categorized transaction data."
+        
+        try:
+            analysis = "# Basic Financial Analysis\n\n"
+            
+            # Calculate basic statistics
+            if 'Withdrawl' in df.columns and 'Deposit' in df.columns:
+                total_expense = df['Withdrawl'].sum()
+                total_income = df['Deposit'].sum()
+                net_flow = total_income - total_expense
+                
+                # Overall summary
+                analysis += f"## Summary\n"
+                analysis += f"* Total Expenses: ₹{total_expense:.2f}\n"
+                analysis += f"* Total Income: ₹{total_income:.2f}\n"
+                analysis += f"* Net Cash Flow: ₹{net_flow:.2f} ({net_flow >= 0 and 'Positive' or 'Negative'})\n\n"
+                
+                # Category analysis
+                analysis += f"## Spending by Category\n"
+                category_expenses = df.groupby('Category')['Withdrawl'].sum().sort_values(ascending=False)
+                for category, amount in category_expenses.items():
+                    if amount > 0:
+                        percent = (amount / total_expense) * 100
+                        analysis += f"* {category}: ₹{amount:.2f} ({percent:.1f}%)\n"
+                
+                # Basic advice
+                analysis += "\n## Basic Recommendations\n"
+                
+                # If negative cash flow
+                if net_flow < 0:
+                    analysis += "* Your spending exceeds your income. Consider creating a budget.\n"
+                    # Find highest spending category
+                    highest_category = category_expenses.index[0] if not category_expenses.empty else "N/A"
+                    analysis += f"* Your highest spending category is {highest_category}. Look for ways to reduce these expenses.\n"
+                else:
+                    analysis += "* You have positive cash flow. Consider saving or investing the surplus.\n"
+                    
+                analysis += "* Track your expenses regularly to identify areas for improvement.\n"
+                analysis += "* Consider creating an emergency fund if you don't have one already.\n"
+            else:
+                analysis += "* Limited transaction data available. Unable to provide detailed analysis.\n"
+                
+            return analysis
+            
+        except Exception as e:
+            return f"Error generating fallback analysis: {str(e)}"
+
+    def test_gemini_connection(self):
+        """Test if the Gemini model is working properly and return status"""
+        if not GOOGLE_API_KEY or gemini_model is None:
+            return False, "API key not configured"
+            
+        try:
+            # Simple test prompt
+            test_prompt = "Give a one-sentence financial tip."
+            response = gemini_model.generate_content(test_prompt)
+            
+            # Try to access the response in different ways
+            if hasattr(response, 'text') and response.text:
+                return True, "Connection successful"
+            elif isinstance(response, dict) and ('text' in response or 'candidates' in response):
+                return True, "Connection successful (dictionary response)"
+            else:
+                # If we got a response but can't extract text
+                return False, f"Connection working but unexpected response format: {type(response)}"
+                
+        except Exception as e:
+            return False, f"Connection failed: {type(e).__name__}: {str(e)}"
+
+    def financial_advice_page(self):
+        """Display detailed financial advice"""
+        st.markdown('<div class="login-container">', unsafe_allow_html=True)
+        st.markdown('<h2 style="text-align:center; color:var(--accent-primary);">Financial Advice</h2>', unsafe_allow_html=True)
+        
+        financial_advice = st.session_state.get('financial_advice', None)
+        category_summary = st.session_state.get('category_summary', None)
+        extracted_df = st.session_state.get('extracted_df', None)
+        
+        # Add AI model status indicator
+        model_status, status_msg = self.test_gemini_connection()
+        
+        if model_status:
+            st.success(f"AI Model Status: Ready")
+        else:
+            st.error(f"AI Model Status: Issue detected - {status_msg}")
+            
+        # Check if financial advice is missing or error message
+        advice_missing = (financial_advice is None or
+                         financial_advice.startswith("Error generating") or
+                         financial_advice.startswith("Financial advice not available"))
+        
+        if not advice_missing:
+            # Display the advice from the model
+            st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
+            st.markdown("## 💰 Your Personalized Financial Insights")
+            st.markdown(financial_advice)
+            st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            # Show fallback analysis if model failed
+            st.warning("AI-powered financial advice is not available. Showing basic analysis instead.")
+            
+            if extracted_df is not None:
+                fallback_analysis = self.generate_fallback_analysis(extracted_df)
+                st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
+                st.markdown(fallback_analysis)
+                st.markdown("</div>", unsafe_allow_html=True)
+                
+                # Option to retry with AI
+                if st.button("Try Again with AI"):
+                    if category_summary:
+                        with st.spinner("Generating AI financial insights..."):
+                            try:
+                                new_advice = self.get_financial_advice(category_summary)
+                                st.session_state['financial_advice'] = new_advice
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to generate AI advice: {str(e)}")
+                    else:
+                        st.error("No transaction summary available to generate advice.")
+            else:
+                st.error("No transaction data available. Please upload and analyze a statement first.")
+        
+        # Add options to customize advice - show regardless of which analysis is displayed
+        st.subheader("Need more specific advice?")
+        specific_topic = st.selectbox("Choose a topic:", 
+                                    ["Saving Strategies", "Debt Management", "Investment Options", 
+                                     "Budget Planning", "Expense Reduction"])
+        
+        if st.button("Get Specific Advice"):
+            if category_summary:
+                with st.spinner(f"Generating advice on {specific_topic}..."):
+                    try:
+                        if gemini_model is not None:
+                            prompt = f"""
+                            As a financial advisor, provide detailed advice specifically on {specific_topic}
+                            based on the following transaction data summary:
+                            
+                            {category_summary}
+                            
+                            Focus only on {specific_topic} with practical, actionable points.
+                            Format your advice in bullet points with clear headings.
+                            """
+                            
+                            response = gemini_model.generate_content(prompt)
+                            st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
+                            st.markdown(f"## {specific_topic} Advice")
+                            st.markdown(response.text)
+                            st.markdown("</div>", unsafe_allow_html=True)
+                        else:
+                            # Fallback for specific topic advice
+                            st.info("AI model not available. Showing general advice for this topic.")
+                            basic_advice = self.get_basic_topic_advice(specific_topic, extracted_df)
+                            st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
+                            st.markdown(f"## {specific_topic} - General Advice")
+                            st.markdown(basic_advice)
+                            st.markdown("</div>", unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"Error generating advice: {str(e)}")
+            else:
+                st.error("No transaction summary available to generate advice.")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            back_btn = st.button("Back to Data")
+        
+        with col2:
+            home_btn = st.button("Home")
+        
+        if back_btn:
+            st.session_state['page'] = 'view_dataframe'
+            st.rerun()
+        
+        if home_btn:
+            st.session_state['page'] = 'file_upload'
+            st.rerun()
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    def get_basic_topic_advice(self, topic, df):
+        """Provide basic advice on specific topics when AI is unavailable"""
+        advice = f"# {topic} Advice\n\n"
+        
+        if topic == "Saving Strategies":
+            advice += "* Set up automatic transfers to a savings account on payday\n"
+            advice += "* Follow the 50/30/20 rule: 50% necessities, 30% wants, 20% savings\n"
+            advice += "* Look for unnecessary subscriptions and recurring charges\n"
+            advice += "* Consider using cash for discretionary spending to be more mindful\n"
+            advice += "* Set specific savings goals with deadlines to stay motivated\n"
+        
+        elif topic == "Debt Management":
+            advice += "* List all debts with interest rates and minimum payments\n"
+            advice += "* Consider the snowball method (paying smallest debts first) or avalanche method (highest interest first)\n"
+            advice += "* Avoid taking on new debt while paying off existing debt\n"
+            advice += "* Look into debt consolidation options if you have high-interest debts\n"
+            advice += "* Contact creditors about possible interest rate reductions\n"
+        
+        elif topic == "Investment Options":
+            advice += "* Build an emergency fund before focusing heavily on investments\n"
+            advice += "* Consider tax-advantaged retirement accounts first\n"
+            advice += "* Look into low-cost index funds for long-term growth\n"
+            advice += "* Diversify investments across different asset classes\n"
+            advice += "* Start small and increase investment contributions over time\n"
+        
+        elif topic == "Budget Planning":
+            advice += "* Track all expenses for a month to understand spending patterns\n"
+            advice += "* Categorize expenses as needs, wants, and savings\n"
+            advice += "* Use the envelope method or budgeting apps to stay on track\n"
+            advice += "* Review and adjust your budget quarterly\n"
+            advice += "* Include occasional expenses like gifts and maintenance in your budget\n"
+        
+        elif topic == "Expense Reduction":
+            if df is not None and 'Category' in df.columns and 'Withdrawl' in df.columns:
+                # Try to provide data-driven advice
+                try:
+                    top_expenses = df.groupby('Category')['Withdrawl'].sum().sort_values(ascending=False).head(3)
+                    advice += f"* Your top spending categories are: {', '.join(top_expenses.index)}\n"
+                    advice += "* Focus on reducing expenses in these categories first\n"
+                except:
+                    pass
+            
+            advice += "* Review subscriptions and cancel unused services\n"
+            advice += "* Compare prices for regular purchases and switch to lower-cost options\n"
+            advice += "* Use coupons and wait for sales for non-urgent purchases\n"
+            advice += "* Consider meal planning to reduce food expenses\n"
+            advice += "* Evaluate if you can negotiate bills like insurance, phone, internet\n"
+        
+        return advice
+    
     def run(self):
         """Main application runner"""
         # Render the appropriate page based on session state
@@ -607,6 +1061,8 @@ class MobileAuthApp:
             self.view_files_page()
         elif page == 'view_dataframe':
             self.view_dataframe_page()
+        elif page == 'financial_advice':
+            self.financial_advice_page()
 
 def main():
     app = MobileAuthApp()

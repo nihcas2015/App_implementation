@@ -6,13 +6,15 @@ from datetime import datetime
 import uuid
 import pdfplumber
 import pandas as pd
-from io import BytesIO  # Add this import at the top
+from io import BytesIO
 import matplotlib.pyplot as plt
 import seaborn as sns
 from transaction_categorizer import TransactionCategorizer
 import google.generativeai as genai
 import os
 from dotenv import load_dotenv
+import base64
+from urllib.parse import urlencode
 
 load_dotenv()
 
@@ -24,14 +26,9 @@ if GOOGLE_API_KEY:
     gemini_model = genai.GenerativeModel('gemini-2.0-flash')
 else:
     gemini_model = None
-    st.warning("Financial advice features will not be available.")
 
 class MobileAuthApp:
     def __init__(self):
-        # Initialize session state variables
-        if 'page' not in st.session_state:
-            st.session_state.page = 'login'
-        
         # User credentials file
         self.credentials_file = 'user_credentials.txt'
         
@@ -46,13 +43,23 @@ class MobileAuthApp:
                 json.dump({}, f)
         
         # Initialize transaction categorizer
-        model_path = os.path.join(os.path.dirname(__file__), r'C:\Users\nihca\Downloads\App\App_implementation\transaction_categorizer_model.pkl')
-        preprocessor_path = os.path.join(os.path.dirname(__file__), r'C:\Users\nihca\Downloads\App\App_implementation\transaction_preprocessor.pkl')
+        model_path = os.path.join(os.path.dirname(__file__), 'transaction_categorizer_model.pkl')
+        preprocessor_path = os.path.join(os.path.dirname(__file__), 'transaction_preprocessor.pkl')
         self.transaction_categorizer = TransactionCategorizer(model_path if os.path.exists(model_path) else None, 
                                                             preprocessor_path if os.path.exists(preprocessor_path) else None)
         
         # Custom CSS for dark-themed mobile-like design
         self.apply_custom_css()
+        
+        # Simple page routing system without session state
+        query_params = st.experimental_get_query_params()
+        self.current_page = query_params.get("page", ["login"])[0]
+        self.current_username = query_params.get("username", [""])[0]
+        self.current_pdf = query_params.get("pdf", [""])[0]
+        
+        # Check if Gemini API is available
+        if not GOOGLE_API_KEY or gemini_model is None:
+            st.warning("Financial advice features will not be available.")
     
     def apply_custom_css(self):
         st.markdown("""
@@ -202,10 +209,8 @@ class MobileAuthApp:
         st.markdown('<p style="text-align:center; color:var(--text-secondary);">Sign in to continue</p>', unsafe_allow_html=True)
         
         # Login form
-        username = st.text_input("Username", key="login_username", 
-                                 help="Enter your registered username")
-        password = st.text_input("Password", type="password", key="login_password",
-                                 help="Enter your account password")
+        username = st.text_input("Username", help="Enter your registered username")
+        password = st.text_input("Password", type="password", help="Enter your account password")
         
         col1, col2 = st.columns(2)
         
@@ -218,10 +223,9 @@ class MobileAuthApp:
         if login_btn:
             if username and password:
                 if self.validate_login(username, password):
-                    # Set session state for login
-                    st.session_state['current_username'] = username
-                    st.session_state['page'] = 'file_upload'
-                    # Use st.rerun() instead of st.experimental_rerun()
+                    # Set URL parameters for file_upload page
+                    params = {"page": "file_upload", "username": username}
+                    st.experimental_set_query_params(**params)
                     st.rerun()
                 else:
                     st.error("Invalid username or password")
@@ -229,7 +233,8 @@ class MobileAuthApp:
                 st.error("Please fill in all fields")
         
         if signup_btn:
-            st.session_state['page'] = 'signup'
+            # Set URL parameters for signup page
+            st.experimental_set_query_params(page="signup")
             st.rerun()
         
         # Forgot password link
@@ -271,7 +276,7 @@ class MobileAuthApp:
                 if self.save_credentials(name, client_id, username, password):
                     st.success("Account Created Successfully!")
                     # Redirect to login page
-                    st.session_state['page'] = 'login'
+                    st.experimental_set_query_params(page="login")
                     st.rerun()
                 else:
                     st.error("Username already exists. Please choose another.")
@@ -279,7 +284,7 @@ class MobileAuthApp:
                 st.error("Please fill in all fields")
         
         if login_return_btn:
-            st.session_state['page'] = 'login'
+            st.experimental_set_query_params(page="login")
             st.rerun()
         
         st.markdown('</div>', unsafe_allow_html=True)
@@ -423,12 +428,16 @@ class MobileAuthApp:
                 try:
                     categorized_df = self.transaction_categorizer.categorize_dataframe(df)
                     
-                    # Store only the DataFrame directly in session state
-                    st.session_state['extracted_df'] = categorized_df
-                    st.session_state['current_pdf'] = unique_filename
+                    # Convert DataFrame to a URL-safe format for passing to next page
+                    self.save_dataframe_to_disk(categorized_df, pdf_path)
                     
-                    # Don't store other derived data in session state
-                    # It will be generated on-demand when needed
+                    # Create URL parameters for the next page
+                    params = {
+                        "page": "view_dataframe",
+                        "username": self.current_username,
+                        "pdf": pdf_path
+                    }
+                    st.experimental_set_query_params(**params)
                     
                     return categorized_df
                 except Exception as e:
@@ -440,6 +449,20 @@ class MobileAuthApp:
         except Exception as e:
             st.error(f"Error extracting tables: {e}")
             return None
+
+    def save_dataframe_to_disk(self, df, pdf_path):
+        """Save DataFrame to disk for temporary storage"""
+        # Create a temporary CSV file based on PDF path
+        csv_path = pdf_path + ".csv"
+        df.to_csv(csv_path, index=False)
+        return csv_path
+
+    def load_dataframe_from_disk(self, pdf_path):
+        """Load DataFrame from disk"""
+        csv_path = pdf_path + ".csv"
+        if os.path.exists(csv_path):
+            return pd.read_csv(csv_path)
+        return None
 
     def generate_category_summary(self, df):
         """Generate a summary of spending by category"""
@@ -524,15 +547,14 @@ class MobileAuthApp:
             st.error(f"Error saving file metadata: {str(e)}")
             return None
     
-    def file_upload_page(self):
+    def file_upload_page(self, username):
         """Render PDF file upload page"""
         st.markdown('<div class="login-container">', unsafe_allow_html=True)
         st.markdown('<h2 style="text-align:center; color:var(--accent-primary);">PDF Upload</h2>', unsafe_allow_html=True)
         st.markdown('<p style="text-align:center; color:var(--text-secondary);">Upload your PDF files securely</p>', unsafe_allow_html=True)
         
-        # Retrieve current username from session state
-        current_username = st.session_state.get('current_username', 'Unknown User')
-        st.write(f"Welcome, {current_username}")
+        # Show current user
+        st.write(f"Welcome, {username}")
         
         # File upload section
         uploaded_file = st.file_uploader(
@@ -572,7 +594,7 @@ class MobileAuthApp:
                     return
                 
                 # Get user-specific directory
-                user_dir = self.get_user_upload_dir(current_username)
+                user_dir = self.get_user_upload_dir(username)
                 
                 # Generate a unique filename with timestamp
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -589,7 +611,7 @@ class MobileAuthApp:
                 # Save metadata including any tags
                 tags = [tag.strip() for tag in file_tags.split(',')] if file_tags else []
                 file_id = self.save_pdf_metadata(
-                    current_username,
+                    username,
                     unique_filename,
                     uploaded_file.name,
                 )
@@ -604,12 +626,9 @@ class MobileAuthApp:
                         df = self.extract_table_pdfplumber(unique_filename, password)
                         
                         if df is not None:
-                            # Store the DataFrame in session state
-                            st.session_state['extracted_df'] = df
-                            st.session_state['current_pdf'] = unique_filename
-                            st.session_state['page'] = 'view_dataframe'
+                            # The extract_table_pdfplumber method should have set URL params already
                             st.success("Data extracted successfully! View the data table.")
-                            st.rerun()
+                            st.rerun()  # Refresh to apply the new URL parameters
                         else:
                             st.warning("No tables found in the PDF or extraction failed.")
                 else:
@@ -618,30 +637,29 @@ class MobileAuthApp:
                 st.error(f"Error uploading PDF: {str(e)}")
         
         if view_files_btn:
-            st.session_state['page'] = 'view_files'
+            # Set parameters for view_files page
+            params = {"page": "view_files", "username": username}
+            st.experimental_set_query_params(**params)
             st.rerun()
         
         if logout_btn:
-            # Clear login-related session state
-            if 'current_username' in st.session_state:
-                del st.session_state['current_username']
-            st.session_state['page'] = 'login'
+            # Clear to login page
+            st.experimental_set_query_params(page="login")
             st.rerun()
         
         st.markdown('</div>', unsafe_allow_html=True)
     
-    def view_dataframe_page(self):
+    def view_dataframe_page(self, username, pdf_path):
         """Display the extracted DataFrame from PDF"""
         st.markdown('<div class="login-container">', unsafe_allow_html=True)
         st.markdown('<h2 style="text-align:center; color:var(--accent-primary);">Extracted Data</h2>', unsafe_allow_html=True)
         
-        # Get the DataFrame from session state
-        df = st.session_state.get('extracted_df', None)
-        current_pdf = st.session_state.get('current_pdf', 'Unknown PDF')
+        # Load DataFrame from disk based on PDF path
+        df = self.load_dataframe_from_disk(pdf_path)
         
         if df is not None:
             # Show PDF file name
-            st.write(f"Data from: {os.path.basename(current_pdf)}")
+            st.write(f"Data from: {os.path.basename(pdf_path)}")
             
             # Display DataFrame statistics
             st.write(f"Found {len(df)} rows and {len(df.columns)} columns")
@@ -720,67 +738,50 @@ class MobileAuthApp:
                     st.info("No category information available. Unable to show analysis.")
             
             with tab3:
-                # Generate financial advice directly from the DataFrame instead of retrieving from session state
                 if 'Category' in df.columns:
-                    # Extract the detailed category data for Gemini directly
+                    # Extract data for Gemini directly from DataFrame
                     gemini_data = self.extract_category_data_for_gemini(df)
                     
-                    # Add a debug option to see raw data sent to Gemini
+                    # Debug option
                     if st.checkbox("Show Raw Data Sent to Gemini"):
                         st.subheader("Raw Transaction Data Sent to Gemini:")
-                        st.text_area("Data", value=gemini_data, height=300, key="gemini_raw_data")
+                        st.text_area("Data", value=gemini_data, height=300)
                     
-                    # Generate advice on-demand
-                    with st.spinner("Generating financial insights..."):
-                        prepared_summary = self.prepare_transaction_summary(gemini_data)
-                        financial_advice = self.get_financial_advice(prepared_summary)
-                        
-                    st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
-                    st.markdown("## 💰 Your Financial Insights")
-                    st.markdown("Below is personalized financial advice based on your transaction data:")
-                    st.markdown(financial_advice)
-                    st.markdown("</div>", unsafe_allow_html=True)
-                    
-                    # Add a button to regenerate advice
-                    if st.button("Regenerate Financial Advice"):
-                        with st.spinner("Generating new financial insights..."):
+                    # Generate advice button
+                    if st.button("Generate Financial Advice"):
+                        with st.spinner("Generating financial insights..."):
                             prepared_summary = self.prepare_transaction_summary(gemini_data)
-                            new_advice = self.get_financial_advice(prepared_summary)
-                            # Display the new advice directly without session state
-                            st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
-                            st.markdown("## 💰 Your Updated Financial Insights")
-                            st.markdown(new_advice)
-                            st.markdown("</div>", unsafe_allow_html=True)
+                            financial_advice = self.get_financial_advice(prepared_summary)
+                            
+                        st.markdown('<div style="padding: 20px; border-radius: 10px; background-color: var(--bg-secondary);">', unsafe_allow_html=True)
+                        st.markdown("## 💰 Your Financial Insights")
+                        st.markdown("Below is personalized financial advice based on your transaction data:")
+                        st.markdown(financial_advice)
+                        st.markdown("</div>", unsafe_allow_html=True)
                 else:
                     st.info("No category information available. Unable to generate financial advice.")
+        else:
+            st.error("No data available. Please upload a PDF first.")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            back_btn = st.button("Back to Upload")
+            if st.button("Back to Upload"):
+                params = {"page": "file_upload", "username": username}
+                st.experimental_set_query_params(**params)
+                st.rerun()
         
         with col2:
-            logout_btn = st.button("Logout")
-        
-        if back_btn:
-            st.session_state['page'] = 'file_upload'
-            st.rerun()
-        
-        if logout_btn:
-            if 'current_username' in st.session_state:
-                del st.session_state['current_username']
-            st.session_state['page'] = 'login'
-            st.rerun()
+            if st.button("Logout"):
+                st.experimental_set_query_params(page="login")
+                st.rerun()
         
         st.markdown('</div>', unsafe_allow_html=True)
     
-    def view_files_page(self):
+    def view_files_page(self, username):
         """Render page to view uploaded PDF files"""
         st.markdown('<div class="login-container">', unsafe_allow_html=True)
         st.markdown('<h2 style="text-align:center; color:var(--accent-primary);">Your Files</h2>', unsafe_allow_html=True)
-        
-        # Retrieve current username from session state
-        current_username = st.session_state.get('current_username', 'Unknown User')
         
         try:
             # Load metadata
@@ -788,7 +789,7 @@ class MobileAuthApp:
                 metadata = json.load(f)
             
             # Filter for current user's files
-            user_files = {k: v for k, v in metadata.items() if v['username'] == current_username}
+            user_files = {k: v for k, v in metadata.items() if v['username'] == username}
             
             if not user_files:
                 st.info("You haven't uploaded any files yet.")
@@ -816,20 +817,15 @@ class MobileAuthApp:
         col1, col2 = st.columns(2)
         
         with col1:
-            back_btn = st.button("Back to Upload")
+            if st.button("Back to Upload"):
+                params = {"page": "file_upload", "username": username}
+                st.experimental_set_query_params(**params)
+                st.rerun()
         
         with col2:
-            logout_btn = st.button("Logout")
-        
-        if back_btn:
-            st.session_state['page'] = 'file_upload'
-            st.rerun()
-        
-        if logout_btn:
-            if 'current_username' in st.session_state:
-                del st.session_state['current_username']
-            st.session_state['page'] = 'login'
-            st.rerun()
+            if st.button("Logout"):
+                st.experimental_set_query_params(page="login")
+                st.rerun()
         
         st.markdown('</div>', unsafe_allow_html=True)
     
@@ -976,7 +972,7 @@ class MobileAuthApp:
         st.markdown('<h2 style="text-align:center; color:var(--accent-primary);">Financial Advice</h2>', unsafe_allow_html=True)
         
         # Get the DataFrame directly from session state instead of depending on multiple state items
-        extracted_df = st.session_state.get('extracted_df', None)
+        extracted_df = self.load_dataframe_from_disk(self.current_pdf)
         
         # Add AI model status indicator
         model_status, status_msg = self.test_gemini_connection()
@@ -1067,18 +1063,16 @@ class MobileAuthApp:
         col1, col2 = st.columns(2)
         
         with col1:
-            back_btn = st.button("Back to Data")
+            if st.button("Back to Data"):
+                params = {"page": "view_dataframe", "username": self.current_username, "pdf": self.current_pdf}
+                st.experimental_set_query_params(**params)
+                st.rerun()
         
         with col2:
-            home_btn = st.button("Home")
-        
-        if back_btn:
-            st.session_state['page'] = 'view_dataframe'
-            st.rerun()
-        
-        if home_btn:
-            st.session_state['page'] = 'file_upload'
-            st.rerun()
+            if st.button("Home"):
+                params = {"page": "file_upload", "username": self.current_username}
+                st.experimental_set_query_params(**params)
+                st.rerun()
         
         st.markdown('</div>', unsafe_allow_html=True)
     
@@ -1133,22 +1127,50 @@ class MobileAuthApp:
         return advice
     
     def run(self):
-        """Main application runner"""
-        # Render the appropriate page based on session state
-        page = st.session_state.get('page', 'login')
+        """Main application router that doesn't use session state"""
+        # Get current page from URL parameters
+        query_params = st.experimental_get_query_params()
+        page = query_params.get("page", ["login"])[0]
+        username = query_params.get("username", [""])[0]
+        pdf_path = query_params.get("pdf", [""])[0]
         
-        if page == 'login':
+        # Route to appropriate page based on URL parameter
+        if page == "login":
             self.login_page()
-        elif page == 'signup':
+        elif page == "signup":
             self.signup_page()
-        elif page == 'file_upload':
-            self.file_upload_page()
-        elif page == 'view_files':
-            self.view_files_page()
-        elif page == 'view_dataframe':
-            self.view_dataframe_page()
-        elif page == 'financial_advice':
-            self.financial_advice_page()
+        elif page == "file_upload":
+            if username:
+                self.file_upload_page(username)
+            else:
+                st.error("Username not provided")
+                st.experimental_set_query_params(page="login")
+                st.rerun()
+        elif page == "view_files":
+            if username:
+                self.view_files_page(username)
+            else:
+                st.error("Username not provided")
+                st.experimental_set_query_params(page="login")
+                st.rerun()
+        elif page == "view_dataframe":
+            if username and pdf_path:
+                self.view_dataframe_page(username, pdf_path)
+            else:
+                st.error("Required parameters missing")
+                st.experimental_set_query_params(page="login")
+                st.rerun()
+        elif page == "financial_advice":
+            if username and pdf_path:
+                self.financial_advice_page(username, pdf_path)
+            else:
+                st.error("Required parameters missing")
+                st.experimental_set_query_params(page="login")
+                st.rerun()
+        else:
+            st.error(f"Unknown page: {page}")
+            st.experimental_set_query_params(page="login")
+            st.rerun()
 
 def main():
     app = MobileAuthApp()

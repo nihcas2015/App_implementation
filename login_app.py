@@ -52,10 +52,10 @@ class MobileAuthApp:
         self.apply_custom_css()
         
         # Simple page routing system without session state
-        query_params = st.experimental_get_query_params()
-        self.current_page = query_params.get("page", ["login"])[0]
-        self.current_username = query_params.get("username", [""])[0]
-        self.current_pdf = query_params.get("pdf", [""])[0]
+        # Replace experimental_get_query_params with query_params
+        self.current_page = st.query_params.get("page", "login")
+        self.current_username = st.query_params.get("username", "")
+        self.current_pdf = st.query_params.get("pdf", "")
         
         # Check if Gemini API is available
         if not GOOGLE_API_KEY or gemini_model is None:
@@ -224,8 +224,8 @@ class MobileAuthApp:
             if username and password:
                 if self.validate_login(username, password):
                     # Set URL parameters for file_upload page
-                    params = {"page": "file_upload", "username": username}
-                    st.experimental_set_query_params(**params)
+                    st.query_params.page = "file_upload"
+                    st.query_params.username = username
                     st.rerun()
                 else:
                     st.error("Invalid username or password")
@@ -234,7 +234,7 @@ class MobileAuthApp:
         
         if signup_btn:
             # Set URL parameters for signup page
-            st.experimental_set_query_params(page="signup")
+            st.query_params.page = "signup"
             st.rerun()
         
         # Forgot password link
@@ -276,7 +276,7 @@ class MobileAuthApp:
                 if self.save_credentials(name, client_id, username, password):
                     st.success("Account Created Successfully!")
                     # Redirect to login page
-                    st.experimental_set_query_params(page="login")
+                    st.query_params.page = "login"
                     st.rerun()
                 else:
                     st.error("Username already exists. Please choose another.")
@@ -284,7 +284,7 @@ class MobileAuthApp:
                 st.error("Please fill in all fields")
         
         if login_return_btn:
-            st.experimental_set_query_params(page="login")
+            st.query_params.page = "login"
             st.rerun()
         
         st.markdown('</div>', unsafe_allow_html=True)
@@ -432,12 +432,10 @@ class MobileAuthApp:
                     self.save_dataframe_to_disk(categorized_df, pdf_path)
                     
                     # Create URL parameters for the next page
-                    params = {
-                        "page": "view_dataframe",
-                        "username": self.current_username,
-                        "pdf": pdf_path
-                    }
-                    st.experimental_set_query_params(**params)
+                    # Update how query parameters are set
+                    st.query_params.page = "view_dataframe"
+                    st.query_params.username = self.current_username
+                    st.query_params.pdf = pdf_path
                     
                     return categorized_df
                 except Exception as e:
@@ -638,13 +636,14 @@ class MobileAuthApp:
         
         if view_files_btn:
             # Set parameters for view_files page
-            params = {"page": "view_files", "username": username}
-            st.experimental_set_query_params(**params)
+            st.query_params.page = "view_files"
+            st.query_params.username = username
             st.rerun()
         
         if logout_btn:
             # Clear to login page
-            st.experimental_set_query_params(page="login")
+            st.query_params.clear()
+            st.query_params.page = "login"
             st.rerun()
         
         st.markdown('</div>', unsafe_allow_html=True)
@@ -767,13 +766,15 @@ class MobileAuthApp:
         
         with col1:
             if st.button("Back to Upload"):
-                params = {"page": "file_upload", "username": username}
-                st.experimental_set_query_params(**params)
+                st.query_params.page = "file_upload"
+                st.query_params.username = username
+                st.query_params.pdf = ""  # Clear the PDF parameter
                 st.rerun()
         
         with col2:
             if st.button("Logout"):
-                st.experimental_set_query_params(page="login")
+                st.query_params.clear()
+                st.query_params.page = "login"
                 st.rerun()
         
         st.markdown('</div>', unsafe_allow_html=True)
@@ -818,13 +819,14 @@ class MobileAuthApp:
         
         with col1:
             if st.button("Back to Upload"):
-                params = {"page": "file_upload", "username": username}
-                st.experimental_set_query_params(**params)
+                st.query_params.page = "file_upload"
+                st.query_params.username = username
                 st.rerun()
         
         with col2:
             if st.button("Logout"):
-                st.experimental_set_query_params(page="login")
+                st.query_params.clear()
+                st.query_params.page = "login"
                 st.rerun()
         
         st.markdown('</div>', unsafe_allow_html=True)
@@ -1064,14 +1066,16 @@ class MobileAuthApp:
         
         with col1:
             if st.button("Back to Data"):
-                params = {"page": "view_dataframe", "username": self.current_username, "pdf": self.current_pdf}
-                st.experimental_set_query_params(**params)
+                st.query_params.page = "view_dataframe"
+                st.query_params.username = self.current_username
+                st.query_params.pdf = self.current_pdf
                 st.rerun()
         
         with col2:
             if st.button("Home"):
-                params = {"page": "file_upload", "username": self.current_username}
-                st.experimental_set_query_params(**params)
+                st.query_params.page = "file_upload"
+                st.query_params.username = self.current_username
+                st.query_params.pdf = ""  # Clear pdf parameter
                 st.rerun()
         
         st.markdown('</div>', unsafe_allow_html=True)
@@ -1129,10 +1133,10 @@ class MobileAuthApp:
     def run(self):
         """Main application router that doesn't use session state"""
         # Get current page from URL parameters
-        query_params = st.experimental_get_query_params()
-        page = query_params.get("page", ["login"])[0]
-        username = query_params.get("username", [""])[0]
-        pdf_path = query_params.get("pdf", [""])[0]
+        # Replace the experimental_get_query_params method
+        page = st.query_params.get("page", "login")
+        username = st.query_params.get("username", "")
+        pdf_path = st.query_params.get("pdf", "")
         
         # Route to appropriate page based on URL parameter
         if page == "login":
@@ -1144,32 +1148,32 @@ class MobileAuthApp:
                 self.file_upload_page(username)
             else:
                 st.error("Username not provided")
-                st.experimental_set_query_params(page="login")
+                st.query_params.page = "login"
                 st.rerun()
         elif page == "view_files":
             if username:
                 self.view_files_page(username)
             else:
                 st.error("Username not provided")
-                st.experimental_set_query_params(page="login")
+                st.query_params.page = "login"
                 st.rerun()
         elif page == "view_dataframe":
             if username and pdf_path:
                 self.view_dataframe_page(username, pdf_path)
             else:
                 st.error("Required parameters missing")
-                st.experimental_set_query_params(page="login")
+                st.query_params.page = "login"
                 st.rerun()
         elif page == "financial_advice":
             if username and pdf_path:
                 self.financial_advice_page(username, pdf_path)
             else:
                 st.error("Required parameters missing")
-                st.experimental_set_query_params(page="login")
+                st.query_params.page = "login"
                 st.rerun()
         else:
             st.error(f"Unknown page: {page}")
-            st.experimental_set_query_params(page="login")
+            st.query_params.page = "login"
             st.rerun()
 
 def main():
